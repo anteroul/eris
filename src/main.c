@@ -22,19 +22,25 @@ void freeGameObjects(GameObjectArray* arr)
     arr->capacity = 0;
 }
 
-GameObject* createGameObject(GameObjectArray* arr, const char* texturePath, Vector2 position, Vector2 size)
+GameObject* createGameObject(GameObjectArray* arr, ObjectType type, const char* texturePath, Vector2 position, Vector2 size, void* script)
 {
     // Resize array if needed
     if (arr->count >= arr->capacity) {
-        arr->capacity *= 2;
-        arr->objects = realloc(arr->objects, sizeof(GameObject) * arr->capacity);
+        arr->capacity++;
+        if (arr->objects == NULL) {
+            arr->objects = malloc(sizeof(GameObject) * arr->capacity);
+        } else {
+            arr->objects = realloc(arr->objects, sizeof(GameObject) * arr->capacity);
+		}
     }
 
     // Create and initialize object
     GameObject obj;
+	obj.type = type;
     obj.texture = LoadTexture(texturePath);
     obj.position = position;
     obj.size = size;
+	obj.script = script;
 
     arr->objects[arr->count++] = obj;
 
@@ -45,17 +51,18 @@ GameObject* createGameObject(GameObjectArray* arr, const char* texturePath, Vect
 // Game Logic
 void update(GameObjectArray* arr)
 {
-    // Example: only the first object acts as player for now
-    if (arr->count > 0) {
-        GameObject* player = &arr->objects[0];
+    for (int i = 0; i < arr->count; i++) {
+        GameObject* obj = &arr->objects[i];
 
-        if (IsKeyDown(KEY_W)) player->position.y -= 2.0f;
-        if (IsKeyDown(KEY_A)) player->position.x -= 2.0f;
-        if (IsKeyDown(KEY_S)) player->position.y += 2.0f;
-        if (IsKeyDown(KEY_D)) player->position.x += 2.0f;
+        if (obj->script) {
+            obj->script(obj);  // call the assigned function
+        }
+
+        // You can add logic per type here too:
+        if (obj->type == ENEMY) {
+            // enemy logic...
+        }
     }
-
-    // Future logic: move enemies, check collisions, etc.
 }
 
 // Rendering
@@ -87,24 +94,26 @@ int main(void)
 
     // Create player
     createGameObject(&gameObjects,
+        PLAYER,
         "wabbit_alpha.png",
         (Vector2) {
         GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f
     },
         (Vector2) {
         40, 80
-    }
+    }, movePlayer
     );
 
     // Example: add another object
     createGameObject(&gameObjects,
+        OBJ_STATIC,
         "wabbit_alpha.png",
         (Vector2) {
         200, 200
     },
         (Vector2) {
         30, 60
-    }
+	}, NULL
     );
 
     // Main loop
