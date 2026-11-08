@@ -1,4 +1,4 @@
-# eris
+# Project Eris
 A top-down sci-fi arena shooter with bullet-hell enemy patterns. Survive waves of enemies that pour in through the four gates, pick up weapon drops, and take down the Overmind boss every fifth wave.
 
 ## Building
