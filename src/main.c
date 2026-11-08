@@ -1,130 +1,171 @@
 #include <raylib.h>
-#include <stdlib.h>
 #include <resource_dir.h>
 #include "globals.h"
 
-// Dynamic Array Functions
-void initGameObjects(GameObjectArray* arr, int initialCapacity)
+Game game = { 0 };
+
+void exitGame(void)
 {
-    arr->objects = malloc(sizeof(GameObject) * initialCapacity);
-    arr->count = 0;
-    arr->capacity = initialCapacity;
+    game.quit = true;
 }
 
-void freeGameObjects(GameObjectArray* arr)
+static void setState(GameState state)
 {
-    for (int i = 0; i < arr->count; i++) {
-        UnloadTexture(arr->objects[i].texture);
+    game.state = state;
+    game.stateTimer = 0.0f;
+    game.menuSelection = 0;
+}
+
+// ---------------------------------------------------------------------------
+// State machine input (title, pause, game over)
+// ---------------------------------------------------------------------------
+static void activatePauseItem(int index)
+{
+    switch (index) {
+    case 0: setState(STATE_PLAYING); break;
+    case 1: resetGame(); setState(STATE_PLAYING); break;
+    case 2: resetGame(); setState(STATE_MENU); break;
+    case 3: exitGame(); break;
+    default: break;
     }
-    free(arr->objects);
-    arr->objects = NULL;
-    arr->count = 0;
-    arr->capacity = 0;
 }
 
-GameObject* createGameObject(GameObjectArray* arr, ObjectType type, const char* texturePath, Vector2 position, Vector2 size, void* script)
+static bool confirmPressed(void)
 {
-    // Resize array if needed
-    if (arr->count >= arr->capacity) {
-        arr->capacity++;
-        if (arr->objects == NULL) {
-            arr->objects = malloc(sizeof(GameObject) * arr->capacity);
-        } else {
-            arr->objects = realloc(arr->objects, sizeof(GameObject) * arr->capacity);
-		}
-    }
-
-    // Create and initialize object
-    GameObject obj;
-	obj.type = type;
-    obj.texture = LoadTexture(texturePath);
-    obj.position = position;
-    obj.size = size;
-	obj.script = script;
-
-    arr->objects[arr->count++] = obj;
-
-    // Return pointer to new object
-    return &arr->objects[arr->count - 1];
+    return IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) || IsKeyPressed(KEY_SPACE);
 }
 
+static void handleStateInput(void)
+{
+    switch (game.state) {
+    case STATE_MENU:
+        if (confirmPressed() || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            resetGame();
+            setState(STATE_PLAYING);
+        } else if (IsKeyPressed(KEY_ESCAPE)) {
+            exitGame();
+        }
+        break;
+
+    case STATE_PLAYING:
+        if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_P) || !IsWindowFocused()) {
+            setState(STATE_PAUSED);
+        }
+        break;
+
+    case STATE_PAUSED: {
+        if (IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_P)) {
+            setState(STATE_PLAYING);
+            break;
+        }
+        if (IsKeyPressed(KEY_W) || IsKeyPressed(KEY_UP)) game.menuSelection = (game.menuSelection + PAUSE_MENU_ITEMS - 1) % PAUSE_MENU_ITEMS;
+        if (IsKeyPressed(KEY_S) || IsKeyPressed(KEY_DOWN)) game.menuSelection = (game.menuSelection + 1) % PAUSE_MENU_ITEMS;
+
+        Vector2 mouse = GetMousePosition();
+        bool mouseMoved = Vector2Length(GetMouseDelta()) > 0.0f;
+        for (int i = 0; i < PAUSE_MENU_ITEMS; i++) {
+            if (!CheckCollisionPointRec(mouse, pauseMenuItemRect(i))) continue;
+            if (mouseMoved) game.menuSelection = i;
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                activatePauseItem(i);
+                return;
+            }
+        }
+        if (confirmPressed()) activatePauseItem(game.menuSelection);
+    } break;
+
+    case STATE_GAMEOVER:
+        if (game.stateTimer < 1.0f) break;
+        if (confirmPressed() || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            resetGame();
+            setState(STATE_PLAYING);
+        } else if (IsKeyPressed(KEY_ESCAPE)) {
+            resetGame();
+            setState(STATE_MENU);
+        }
+        break;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Game Logic
+// ---------------------------------------------------------------------------
 void update(GameObjectArray* arr)
 {
+    float frame = GetFrameTime();
+    if (frame > 1.0f / 30.0f) frame = 1.0f / 30.0f; // avoid tunnelling after hitches
+
+    // The cursor runs in every state so menus stay usable.
     for (int i = 0; i < arr->count; i++) {
         GameObject* obj = &arr->objects[i];
+        if (obj->active && obj->type == CURSOR && obj->script) obj->script(obj);
+    }
 
-        if (obj->script) {
-            obj->script(obj);  // call the assigned function
-        }
+    game.stateTimer += frame;
 
-        // You can add logic per type here too:
-        if (obj->type == ENEMY) {
-            // enemy logic...
-        }
+    if (game.state == STATE_GAMEOVER) {
+        updateParticles(frame); // let the final explosion play out
+        return;
+    }
+    if (game.state != STATE_PLAYING) {
+        game.dt = 0.0f; // paused: the world is frozen
+        return;
+    }
+
+    game.dt = frame;
+    game.time += frame;
+    game.player = findObjectById(arr, game.playerId);
+
+    // Spawns go to game.pending, so the array (and pointers into it) stay stable here.
+    int count = arr->count;
+    for (int i = 0; i < count; i++) {
+        GameObject* obj = &arr->objects[i];
+        if (!obj->active || !obj->script || obj->type == CURSOR) continue;
+        obj->script(obj);
+    }
+
+    flushPendingObjects();
+    resolveCollisions();
+    flushPendingObjects();
+    removeInactiveObjects(arr);
+    game.player = findObjectById(arr, game.playerId);
+    updateWaves();
+    flushPendingObjects();
+
+    updateParticles(frame);
+    game.shake = fmaxf(0.0f, game.shake - frame * 30.0f);
+    if (game.messageTimer > 0.0f) game.messageTimer -= frame;
+    for (int g = 0; g < GATE_COUNT; g++) {
+        if (game.gateFlash[g] > 0.0f) game.gateFlash[g] -= frame;
     }
 }
 
-// Rendering
-void draw(GameObjectArray* arr)
-{
-    BeginDrawing();
-    ClearBackground(BLACK);
-
-    for (int i = 0; i < arr->count; i++) {
-        GameObject* obj = &arr->objects[i];
-        DrawTextureEx(obj->texture, obj->position, 0.0f,
-            obj->size.x / obj->texture.width, WHITE);
-    }
-
-    EndDrawing();
-}
-
+// ---------------------------------------------------------------------------
 // Entry Point
+// ---------------------------------------------------------------------------
 int main(void)
 {
-    SetConfigFlags(FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
-    InitWindow(800, 600, "Project Eris");
-    //InitWindow(GetScreenWidth(), GetScreenHeight(), "Project Eris");
-    //ToggleFullscreen();
+    SetConfigFlags(FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT);
+    InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Project Eris");
+    SetExitKey(KEY_NULL); // ESC pauses instead of closing the window
+    HideCursor();
     SearchAndSetResourceDir("resources");
 
-    GameObjectArray gameObjects;
-    initGameObjects(&gameObjects, 4);
+    initGameObjects(&game.objects, 512);
+    initGameObjects(&game.pending, 128);
 
-    // Create player
-    createGameObject(&gameObjects,
-        PLAYER,
-        "wabbit_alpha.png",
-        (Vector2) {
-        GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f
-    },
-        (Vector2) {
-        40, 80
-    }, movePlayer
-    );
+    resetGame(); // populate the arena behind the title screen
+    setState(STATE_MENU);
 
-    // Example: add another object
-    createGameObject(&gameObjects,
-        OBJ_STATIC,
-        "wabbit_alpha.png",
-        (Vector2) {
-        200, 200
-    },
-        (Vector2) {
-        30, 60
-	}, NULL
-    );
-
-    // Main loop
-    while (!WindowShouldClose())
+    while (!WindowShouldClose() && !game.quit)
     {
-        update(&gameObjects);
-        draw(&gameObjects);
+        handleStateInput();
+        update(&game.objects);
+        draw(&game.objects);
     }
 
-    // Cleanup
-    freeGameObjects(&gameObjects);
+    freeGameObjects(&game.objects);
+    freeGameObjects(&game.pending);
     CloseWindow();
 
     return 0;
